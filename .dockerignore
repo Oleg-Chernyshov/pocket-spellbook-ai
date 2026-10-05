@@ -1,0 +1,11 @@
+.venv
+venv
+__pycache__
+.pytest_cache
+.git
+.env
+models
+*.pyc
+_dump_spells.py
+_inspect.py
+_inspect.txt

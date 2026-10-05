@@ -1,0 +1,20 @@
+services:
+  ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pocket-spellbook-ai
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SPELLBOOK_API_URL: ${SPELLBOOK_API_URL:-http://host.docker.internal:3000}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ai_models:/app/models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  ai_models:
