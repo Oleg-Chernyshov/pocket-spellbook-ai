@@ -1,21 +1,19 @@
-from pathlib import Path
+from collections import Counter
 
 import pytest
 
-from app.config import settings
-from app.loader import load_from_file
+from app.preprocess import normalize_school
 from app.search import SearchEngine
-from app.train import train_indexes
-
-ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.fixture(scope="module")
-def engine() -> SearchEngine:
-    settings.data_dir = ROOT / "data"
-    settings.models_dir = ROOT / "models"
-    records = load_from_file(ROOT / "data" / "spells_raw.json")
-    return SearchEngine(train_indexes(records))
+@pytest.fixture(params=["hybrid", "lexical"])
+def engine(request) -> SearchEngine:
+    return request.getfixturevalue(f"{request.param}_engine")
+
+
+def test_hybrid_engine_uses_embeddings(hybrid_engine: SearchEngine, lexical_engine: SearchEngine):
+    assert hybrid_engine.semantic
+    assert not lexical_engine.semantic
 
 
 def _names(engine: SearchEngine, query: str, language: str, **filters) -> list[str]:
@@ -61,6 +59,33 @@ def test_level_filter(engine: SearchEngine):
     result = engine.search("огонь", language="ru", level="0", limit=20)
     assert result.data
     assert all(item.level == "0" for item in result.data)
+
+
+def test_school_filter(engine: SearchEngine):
+    result = engine.search("огонь", language="ru", school="Воплощение", limit=50)
+    assert result.data
+    assert all(normalize_school(item.school) == "evocation" for item in result.data)
+
+
+def test_character_class_filter(engine: SearchEngine):
+    index = engine.indexes["ru"]
+    class_id = Counter(cid for item in index.items for cid in item.record.classIds).most_common(1)[0][0]
+    allowed = {item.record.id for item in index.items if class_id in item.record.classIds}
+    result = engine.search("магия", language="ru", character_class=class_id, limit=100)
+    assert result.data
+    assert all(item.id in allowed for item in result.data)
+
+
+def test_unknown_character_class_returns_nothing(engine: SearchEngine):
+    result = engine.search("магия", language="ru", character_class=999_999)
+    assert result.data == []
+    assert result.pagination.total == 0
+
+
+def test_results_are_sorted_by_score(engine: SearchEngine):
+    result = engine.search("огненный шар", language="ru", limit=20)
+    scores = [item.score for item in result.data]
+    assert scores == sorted(scores, reverse=True)
 
 
 def test_pagination_matches_nestjs_shape(engine: SearchEngine):

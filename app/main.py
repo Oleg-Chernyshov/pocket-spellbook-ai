@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 import logging
+import secrets
+import threading
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.logs import configure_logging
 from app.schemas import SearchResponse
 from app.search import SearchEngine
 from app import search as search_module
 
 logger = logging.getLogger(__name__)
 
+_rebuild_lock = threading.Lock()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    configure_logging()
     logger.info("Loading spell search model...")
     settings.models_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -30,11 +35,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Pocket Spellbook AI", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=settings.cors_origin_list,
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+
+def _status(engine: SearchEngine) -> dict:
+    return {
+        "status": "ok",
+        "spells": {language: len(index.items) for language, index in engine.indexes.items()},
+        "semantic": engine.semantic,
+        "model": {key: engine.meta.get(key) for key in ("builtAt", "dataHash", "sklearn", "embedding")},
+    }
 
 
 @app.get("/health")
@@ -42,10 +55,32 @@ def health():
     engine = search_module.engine
     if engine is None:
         raise HTTPException(status_code=503, detail="Model is not ready")
-    return {
-        "status": "ok",
-        "spells": {language: len(index.items) for language, index in engine.indexes.items()},
-    }
+    return _status(engine)
+
+
+@app.post("/admin/rebuild")
+def rebuild(
+    source: Literal["auto", "api", "file"] = "auto",
+    x_admin_token: str | None = Header(default=None),
+):
+    if not settings.admin_token:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not x_admin_token or not secrets.compare_digest(
+        x_admin_token.encode("utf-8"), settings.admin_token.encode("utf-8")
+    ):
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    if not _rebuild_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Rebuild is already running")
+    try:
+        engine = SearchEngine.build(source=source)
+    except Exception as exc:
+        logger.exception("Model rebuild failed")
+        raise HTTPException(status_code=502, detail=f"Rebuild failed: {exc}") from exc
+    finally:
+        _rebuild_lock.release()
+    search_module.engine = engine
+    logger.info("Search engine rebuilt from source=%s", source)
+    return _status(engine)
 
 
 @app.get("/search", response_model=SearchResponse)

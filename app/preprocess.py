@@ -119,6 +119,10 @@ def build_document(translation: SpellTranslation) -> str:
     return f"{name} {name} {name} {school} {range_text} {text}".strip()
 
 
+def build_passage(translation: SpellTranslation) -> str:
+    return f"{strip_html(translation.name)}. {strip_html(translation.text)}"
+
+
 def tokenize(text: str, language: Language) -> list[str]:
     stemmer = RU_STEMMER if language == "ru" else EN_STEMMER
     return [stemmer.stemWord(token.lower().replace("ё", "е")) for token in TOKEN_RE.findall(text)]
